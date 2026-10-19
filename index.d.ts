@@ -68,6 +68,14 @@ export interface GatewayOptions {
   denyCidrs?: string[];
   /** Charge a request that claims "Chrome/…" but lacks the Sec-Fetch-Mode header every Chromium sends. Default false. */
   chargeSpoofedBrowsers?: boolean;
+  /** Charge a desktop browser string ~2 years behind its auto-updates (a scraper rotation pool). Default true. */
+  chargeStaleBrowsers?: boolean;
+  /** SEO resellers: charged, and refused in robots.txt. Default SCRAPER_AGENTS. */
+  scrapers?: string[];
+  /** Headless browsers that name themselves: charged. Default HEADLESS_AGENTS. */
+  headless?: string[];
+  /** Search crawlers never metered when their address matches their name. Default WELCOME_CRAWLERS; false disables. */
+  welcome?: WelcomeCrawler[] | false;
   /** Requests never charged, e.g. ones carrying a signed-in cookie. */
   exempt?: (request: Request) => boolean;
   /** Pass signing secret. Defaults to the CoinPay key. */
@@ -191,6 +199,10 @@ export interface Gateway {
   passFrom: (request: Request) => string | null;
   /** Whether that token opens the site: a live day pass this gateway minted, or a valid, unrevoked Power Key. */
   verifyPass: (token: string | null) => Promise<boolean>;
+  /** Whether the gateway's own rules charge this request (lists, spoofed or stale browser). */
+  isPaid: (request: Request) => boolean;
+  /** Whether this is a welcome search crawler whose address matches its name. */
+  isWelcome: (request: Request) => boolean;
   /** The x402 offer this gateway would make, without answering a request. */
   offer: (days?: number) => Offer;
   /** The full 402 body around that offer: the offer plus the pass terms. */
@@ -201,6 +213,13 @@ export function createGateway(options: GatewayOptions): Gateway;
 export function wantsHtml(accept?: string | null): boolean;
 
 export const TRAINING_AGENTS: string[];
+export const SCRAPER_AGENTS: string[];
+export const HEADLESS_AGENTS: string[];
+export interface WelcomeCrawler {
+  token: string;
+  cidrs: string[];
+}
+export const WELCOME_CRAWLERS: WelcomeCrawler[];
 export const RETRIEVAL_AGENTS: string[];
 export function isTrainingAgent(userAgent?: string | null, agents?: string[]): boolean;
 
@@ -213,6 +232,9 @@ export function compileCidrs(list?: string[]): Cidr[];
 export function inCidrs(ip: string, compiled: Cidr[]): boolean;
 export function clientIp(request: Request): string;
 export function isSpoofedBrowser(request: Request): boolean;
+export function isStaleBrowser(userAgent: string, now?: number, maxMajorsBehind?: number): boolean;
+export function currentMajor(browser: 'chrome' | 'firefox', now?: number): number;
+export function welcomeCrawler(request: Request, list: WelcomeCrawler[] | null | undefined): string | null;
 export function renderPage(ctx: PageContext): string;
 
 export function mintPass(args: { secret: string; ref: string | null; expiresAt: number; now?: number }): Promise<{ token: string; expiresAt: number; ref: string | null }>;

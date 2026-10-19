@@ -89,7 +89,11 @@ export const GET = robotsRoute(gateway, { disallow: ['/login', '/api/'] });
 | `header` | `x-crawl-pass` | where the pass goes; `Authorization: Bearer` works too |
 | `path` | `/crawl` | the sales page |
 | `openPaths` | `[]` | extra paths a refused crawler may read (`robots.txt`, the sales page, `security.txt` and `.well-known/` always are) |
-| `isPaidAgent` | training list | `(userAgent) => boolean` |
+| `isPaidAgent` | training + scraper + headless lists | `(userAgent) => boolean` |
+| `scrapers` | `SCRAPER_AGENTS` | SEO resellers (AhrefsBot, SemrushBot, MJ12bot, DataForSeoBot, ...): charged and refused in robots.txt |
+| `headless` | `HEADLESS_AGENTS` | headless browsers that name themselves (Lightpanda, HeadlessChrome, PhantomJS): charged |
+| `chargeStaleBrowsers` | `true` | charge a desktop Chrome/Edge/Firefox string about two years behind its auto-updates. Scraper rotation pools copy old strings; people's browsers update themselves. Phones, Firefox ESRs and the last version an old OS can run are never judged |
+| `welcome` | `WELCOME_CRAWLERS` | Googlebot, bingbot and Applebot read unmetered when their address is in the operator's published range. A copied string from anywhere else is metered like everyone; `false` turns this off |
 | `training`, `retrieval` | the lists in `./agents` | |
 | `secret` | the CoinPay key | pass signing secret |
 | `page` | built in | `(ctx) => html` |
