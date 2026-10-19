@@ -77,7 +77,8 @@ export interface GatewayOptions {
   /** Charge a request wearing a welcome search crawler's name from outside its published ranges. Default true. */
   chargeImpostors?: boolean;
   /** Require a one-line script (cookie + reload) on these paths before serving them. Off by default. */
-  challenge?: { paths: string[]; cookie?: string } | false;
+  /** Only GETs to `paths` that `when` accepts (default: all of them), e.g. `(req, url) => url.search.length > 1` for faceted URLs. */
+  challenge?: { paths: string[]; cookie?: string; when?: (request: Request, url: URL) => boolean } | false;
   /** SEO resellers: charged, and refused in robots.txt. Default SCRAPER_AGENTS. */
   scrapers?: string[];
   /** Headless browsers that name themselves: charged. Default HEADLESS_AGENTS. */

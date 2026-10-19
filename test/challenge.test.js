@@ -81,3 +81,16 @@ describe('AI answer-engine indexers', () => {
     assert.equal((await charging.handle(req('/about', 'Mozilla/5.0 (compatible; YouBot/1.0)')))?.status, 402);
   });
 });
+
+describe('challenge.when', () => {
+  it('challenges only the URLs the predicate accepts, e.g. faceted ones', async () => {
+    const g = gw({ challenge: { paths: ['/tlds', '/feeds/'], when: (_r, url) => url.search.length > 1 } });
+    const html = { accept: 'text/html' };
+    assert.equal(await g.handle(req('/tlds', CHROME, html)), null, 'plain /tlds');
+    assert.equal(await g.handle(req('/feeds/new', CHROME, html)), null, 'plain feed');
+    assert.equal((await g.handle(req('/tlds?manager=x&sort=tld', CHROME, html)))?.status, 402);
+    assert.equal((await g.handle(req('/feeds/new?collection=packages&tags=ai', CHROME, html)))?.status, 402);
+    const token = await challengeToken(KEY, '198.51.100.7');
+    assert.equal(await g.handle(req('/tlds?manager=x', CHROME, { ...html, cookie: `pf_js=${token}` })), null);
+  });
+});
