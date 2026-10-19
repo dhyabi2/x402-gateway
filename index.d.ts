@@ -70,8 +70,12 @@ export interface GatewayOptions {
   chargeSpoofedBrowsers?: boolean;
   /** Charge a desktop browser string ~2 years behind its auto-updates (a scraper rotation pool). Default true. */
   chargeStaleBrowsers?: boolean;
-  /** AI answer-engine indexers: charged, named in robots.txt. Default AI_INDEX_AGENTS. */
+  /** Extra agents to charge and refuse in robots.txt, e.g. AI_INDEX_AGENTS. Default none: since 0.10 the AI indexers are welcome retrieval crawlers. */
   aiIndex?: string[];
+  /** Retrieval crawlers believed only from their published addresses (OpenAI, Perplexity). Default VERIFIED_RETRIEVAL; false disables. */
+  verifiedRetrieval?: WelcomeCrawler[] | false;
+  /** Charge a request wearing a welcome search crawler's name from outside its published ranges. Default true. */
+  chargeImpostors?: boolean;
   /** Require a one-line script (cookie + reload) on these paths before serving them. Off by default. */
   challenge?: { paths: string[]; cookie?: string } | false;
   /** SEO resellers: charged, and refused in robots.txt. Default SCRAPER_AGENTS. */
@@ -229,6 +233,9 @@ export interface WelcomeCrawler {
   cidrs: string[];
 }
 export const WELCOME_CRAWLERS: WelcomeCrawler[];
+export const VERIFIED_RETRIEVAL: WelcomeCrawler[];
+/** The welcome crawler a request claims to be from outside its published ranges, or null. */
+export function impostorCrawler(request: Request, list: WelcomeCrawler[]): string | null;
 export const RETRIEVAL_AGENTS: string[];
 export function isTrainingAgent(userAgent?: string | null, agents?: string[]): boolean;
 

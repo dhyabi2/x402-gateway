@@ -124,8 +124,18 @@ describe('welcome crawlers are never metered', () => {
     assert.equal(g.isWelcome(req('/', GOOGLEBOT, { 'x-real-ip': '66.249.73.129' })), true);
   });
 
-  it('a copied Googlebot string from anywhere else is metered like everyone', async () => {
+  it('a copied Googlebot string from anywhere else is charged as an impostor', async () => {
     const g = gatewayFor({ freeQuota: quota });
+    for (let i = 0; i < 3; i++) {
+      const res = await g.handle(req('/api/v1/search', GOOGLEBOT, { 'x-real-ip': '203.0.113.9' }));
+      assert.equal(res?.status, 402);
+    }
+    assert.equal(g.isPaid(req('/', GOOGLEBOT, { 'x-real-ip': '203.0.113.9' })), true);
+    assert.equal(g.isPaid(req('/', GOOGLEBOT, { 'x-real-ip': '66.249.73.129' })), false);
+  });
+
+  it('with chargeImpostors off, a copied Googlebot string is metered like everyone', async () => {
+    const g = gatewayFor({ freeQuota: quota, chargeImpostors: false });
     const statuses = [];
     for (let i = 0; i < 4; i++) {
       const res = await g.handle(req('/api/v1/search', GOOGLEBOT, { 'x-real-ip': '203.0.113.9' }));
@@ -134,11 +144,66 @@ describe('welcome crawlers are never metered', () => {
     assert.deepEqual(statuses, [200, 200, 402, 402]);
   });
 
+  it('never judges an impostor without a readable address', async () => {
+    assert.equal(await gatewayFor().handle(req('/', GOOGLEBOT)), null);
+  });
+
+  it('verifies Googlebot over IPv6 and behind Cloudflare', async () => {
+    const g = gatewayFor({ freeQuota: quota });
+    assert.equal(g.isWelcome(req('/', GOOGLEBOT, { 'x-real-ip': '2001:4860:4801:10::1' })), true);
+    // Through Cloudflare's proxy the hop is Cloudflare's and the caller is in CF-Connecting-IP.
+    const viaCf = { 'x-real-ip': '172.68.1.1', 'cf-connecting-ip': '66.249.73.129' };
+    assert.equal(g.isWelcome(req('/', GOOGLEBOT, viaCf)), true);
+    // ...but a client cannot choose its address with that header.
+    assert.equal(g.isPaid(req('/', GOOGLEBOT, { 'x-real-ip': '203.0.113.9', 'cf-connecting-ip': '66.249.73.129' })), true);
+  });
+
+  it('DuckDuckBot and Cloudflare crawlers are welcome from their ranges', () => {
+    const g = gatewayFor();
+    assert.equal(g.isWelcome(req('/', 'DuckDuckBot/1.1; (+http://duckduckgo.com/duckduckbot.html)', { 'x-real-ip': '20.191.45.212' })), true);
+    assert.equal(g.isWelcome(req('/', 'Mozilla/5.0 (compatible; Cloudflare-AlwaysOnline/1.0)', { 'x-real-ip': '104.16.1.1' })), true);
+    assert.equal(g.isPaid(req('/', 'Mozilla/5.0 (compatible; Cloudflare-AlwaysOnline/1.0)', { 'x-real-ip': '203.0.113.9' })), true);
+  });
+
   it('matches bingbot and Applebot by their ranges, and can be switched off', () => {
     const bing = req('/', 'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)', { 'x-real-ip': '40.77.167.20' });
     const apple = req('/', 'Mozilla/5.0 (Macintosh) Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)', { 'x-real-ip': '17.241.1.1' });
     assert.equal(welcomeCrawler(bing, WELCOME_CRAWLERS), 'bingbot');
     assert.equal(welcomeCrawler(apple, WELCOME_CRAWLERS), 'Applebot');
     assert.equal(gatewayFor({ welcome: false }).isWelcome(bing), false);
+    // An Applebot string from outside Apple's ranges is an impostor.
+    const fake = req('/', 'Mozilla/5.0 (Macintosh) Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)', { 'x-real-ip': '203.0.113.9' });
+    assert.equal(gatewayFor().isPaid(fake), true);
+  });
+});
+
+describe('retrieval crawlers and AI chat fetchers are welcome and unmetered', () => {
+  const quota = { requests: 1, windowSeconds: 60 };
+  const ua = (t) => `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ${t}/1.0; +https://example.com/bot)`;
+
+  it('names without published addresses are believed by name, past the allowance', async () => {
+    const g = gatewayFor({ freeQuota: quota });
+    for (const t of ['Claude-User', 'Claude-SearchBot', 'meta-externalfetcher', 'meta-webindexer', 'YouBot', 'ExaSearchBot', 'AionBot', 'DuckAssistBot', 'MistralAI-User']) {
+      for (let i = 0; i < 3; i++) assert.equal(await g.handle(req('/', ua(t), { 'x-real-ip': '203.0.113.9' })), null, t);
+      assert.equal(g.isWelcome(req('/', ua(t), { 'x-real-ip': '203.0.113.9' })), true, t);
+    }
+  });
+
+  it('OpenAI and Perplexity are believed only from their published addresses', async () => {
+    const g = gatewayFor({ freeQuota: quota });
+    assert.equal(g.isWelcome(req('/', ua('ChatGPT-User'), { 'x-real-ip': '23.98.142.177' })), true);
+    assert.equal(g.isWelcome(req('/', ua('OAI-SearchBot'), { 'x-real-ip': '74.7.175.130' })), true);
+    // From elsewhere: metered like anyone, not charged outright.
+    const elsewhere = { 'x-real-ip': '203.0.113.9' };
+    assert.equal(g.isWelcome(req('/', ua('ChatGPT-User'), elsewhere)), false);
+    assert.equal(g.isPaid(req('/', ua('ChatGPT-User'), elsewhere)), false);
+    assert.equal(await g.handle(req('/', ua('ChatGPT-User'), elsewhere)), null);
+    assert.equal((await g.handle(req('/', ua('ChatGPT-User'), elsewhere)))?.status, 402);
+  });
+
+  it('training crawlers are still charged', async () => {
+    for (const t of ['GPTBot', 'ClaudeBot', 'CCBot', 'Bytespider', 'Amazonbot', 'meta-externalagent']) {
+      assert.equal((await gatewayFor().handle(req('/', ua(t), { 'x-real-ip': '23.98.142.177' })))?.status, 402, t);
+    }
   });
 });

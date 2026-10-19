@@ -92,8 +92,10 @@ export const GET = robotsRoute(gateway, { disallow: ['/login', '/api/'] });
 | `isPaidAgent` | training + scraper + headless lists | `(userAgent) => boolean` |
 | `scrapers` | `SCRAPER_AGENTS` | SEO resellers (AhrefsBot, SemrushBot, MJ12bot, DataForSeoBot, ...): charged and refused in robots.txt |
 | `headless` | `HEADLESS_AGENTS` | headless browsers that name themselves (Lightpanda, HeadlessChrome, PhantomJS): charged |
-| `aiIndex` | `AI_INDEX_AGENTS` | AI answer-engine indexers (meta-webindexer, YouBot, ExaSearchBot, AionBot): charged and named in robots.txt |
-| `challenge` | off | `{ paths: ['/i/'], cookie?: 'pf_js' }`: every GET to these paths must run a one-line script (sets a per-address, per-day HMAC cookie and reloads) or gets a 402. Named retrieval crawlers and address-verified search crawlers skip it; sessions and passes never see it. For residential swarms that wear a current browser string and never run the page |
+| `aiIndex` | none | extra agents to charge and refuse in robots.txt. Since 0.10 the AI answer-engine indexers (`AI_INDEX_AGENTS`: meta-webindexer, YouBot, ExaSearchBot, AionBot) are welcome retrieval crawlers; pass `aiIndex: AI_INDEX_AGENTS` to charge them anyway |
+| `verifiedRetrieval` | `VERIFIED_RETRIEVAL` | retrieval crawlers believed only from their operator's published addresses (OAI-SearchBot, ChatGPT-User, PerplexityBot, Perplexity-User); from elsewhere they are metered. Other retrieval and AI chat fetchers (Claude-User, Claude-SearchBot, Meta-ExternalFetcher, DuckAssistBot, MistralAI-User, the AI indexers) publish no addresses and are believed by name |
+| `chargeImpostors` | `true` | a request wearing a `welcome` crawler's name (Googlebot, bingbot, Applebot, DuckDuckBot, Cloudflare-*) from an address outside that operator's published list is charged. Never judged without a readable address |
+| `challenge` | off | `{ paths: ['/i/'], cookie?: 'pf_js' }`: every GET to these paths must run a one-line script (sets a per-address, per-day HMAC cookie and reloads) or gets a 402. Welcome crawlers (address-verified search crawlers, retrieval crawlers, AI chat fetchers) skip it; a client that did not ask for HTML gets the JSON offer instead of the script; sessions and passes never see it. For residential swarms that wear a current browser string and never run the page |
 | `chargeStaleBrowsers` | `true` | charge a desktop Chrome/Edge/Firefox string about two years behind its auto-updates. Scraper rotation pools copy old strings; people's browsers update themselves. Phones, Firefox ESRs and the last version an old OS can run are never judged |
 | `welcome` | `WELCOME_CRAWLERS` | Googlebot, bingbot and Applebot read unmetered when their address is in the operator's published range. A copied string from anywhere else is metered like everyone; `false` turns this off |
 | `training`, `retrieval` | the lists in `./agents` | |
@@ -190,3 +192,13 @@ A pass is `cp_<payload>.<hmac>`: its own expiry and the payment's nonce, signed 
 ## Licence
 
 MIT
+
+## Crawler address lists
+
+`src/ranges.js` is generated from each operator's published list (Google's googlebot.json, Bing, DuckDuckGo, OpenAI's searchbot/chatgpt-user, Perplexity, Cloudflare's ips-v4/ips-v6). Refresh it before every release:
+
+```sh
+npm run ranges
+```
+
+Behind Cloudflare's proxy the caller is read from `CF-Connecting-IP`, but only when the edge hop is itself a Cloudflare address.
