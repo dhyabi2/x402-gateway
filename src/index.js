@@ -1,6 +1,6 @@
 import { HEADER as POWER_KEY_HEADER, isPowerKey, keyFrom, PROFULLSTACK_KEYS, SHOP_URL, verifyKey } from '@profullstack/keys';
-import { AI_INDEX_AGENTS, HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
-import { clientIp, compileCidrs, inCidrs, isSpoofedBrowser, isStaleBrowser, welcomeCrawler } from './edge.js';
+import { HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, VERIFIED_RETRIEVAL, WELCOME_CRAWLERS } from './agents.js';
+import { clientIp, compileCidrs, impostorCrawler, inCidrs, isSpoofedBrowser, isStaleBrowser, welcomeCrawler } from './edge.js';
 import { memoryQuotaStore, meters, normaliseQuota, quotaHeaders, spend } from './quota.js';
 import { challengePage, challengeToken, passedChallenge } from './challenge.js';
 import { renderPage } from './page.js';
@@ -17,8 +17,27 @@ import {
   verifyAndSettle,
 } from './x402.js';
 
-export { AI_INDEX_AGENTS, HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
-export { clientIp, compileCidrs, currentMajor, inCidrs, isSpoofedBrowser, isStaleBrowser, parseCidr, welcomeCrawler } from './edge.js';
+export {
+  AI_INDEX_AGENTS,
+  HEADLESS_AGENTS,
+  isTrainingAgent,
+  RETRIEVAL_AGENTS,
+  SCRAPER_AGENTS,
+  TRAINING_AGENTS,
+  VERIFIED_RETRIEVAL,
+  WELCOME_CRAWLERS,
+} from './agents.js';
+export {
+  clientIp,
+  compileCidrs,
+  currentMajor,
+  impostorCrawler,
+  inCidrs,
+  isSpoofedBrowser,
+  isStaleBrowser,
+  parseCidr,
+  welcomeCrawler,
+} from './edge.js';
 export { challengePage, challengeToken, cookieValue, passedChallenge } from './challenge.js';
 export { renderPage } from './page.js';
 export { mintPass, readPass } from './pass.js';
@@ -61,7 +80,9 @@ export { isPowerKey, keyFrom, PROFULLSTACK_KEYS, verifyKey } from '@profullstack
  * @param {boolean} [options.chargeStaleBrowsers=true]  charge a desktop browser string two years behind its auto-updates (a rotation pool)
  * @param {string[]} [options.scrapers]            SEO resellers charged and refused in robots.txt; default SCRAPER_AGENTS
  * @param {string[]} [options.headless]            headless browsers charged; default HEADLESS_AGENTS
- * @param {string[]} [options.aiIndex]             AI answer-engine indexers charged and named in robots.txt; default AI_INDEX_AGENTS
+ * @param {string[]} [options.aiIndex]             extra agents to charge and refuse in robots.txt, e.g. AI_INDEX_AGENTS; default none (they are welcome retrieval crawlers since 0.10)
+ * @param {{token: string, cidrs: string[]}[]|false} [options.verifiedRetrieval]  retrieval crawlers believed only from their published addresses; default VERIFIED_RETRIEVAL
+ * @param {boolean} [options.chargeImpostors=true]  charge a request wearing a welcome search crawler's name from outside its published ranges
  * @param {{paths: string[], cookie?: string}|false} [options.challenge]  browser-looking requests to these paths must run a one-line script (cookie + reload) first; off by default
  * @param {{token: string, cidrs: string[]}[]|false} [options.welcome]  search crawlers never metered when name and address agree; default WELCOME_CRAWLERS
  * @param {(request: Request) => boolean} [options.exempt]  requests never charged, e.g. ones carrying a signed-in cookie
@@ -200,6 +221,40 @@ export function createGateway(options = {}) {
       return result.ok;
     }
     return Boolean(await readPass(token, { secret }));
+  };
+
+  /**
+   * Whether a request is charged by the lists, as a spoofed or stale browser
+   * string, or as an impostor wearing a welcome search crawler's name from an
+   * address that crawler's operator does not publish.
+   */
+  const isPaid = (request) => {
+    const ua = request.headers.get('user-agent') ?? '';
+    return Boolean(
+      o.isPaidAgent(ua) ||
+        (o.chargeSpoofedBrowsers && isSpoofedBrowser(request)) ||
+        (o.chargeStaleBrowsers && isStaleBrowser(ua)) ||
+        (o.chargeImpostors && impostorCrawler(request, o.welcome)),
+    );
+  };
+
+  /**
+   * Whether a request reads free and unmetered: a search crawler whose address
+   * agrees with its name, a retrieval crawler from its operator's published
+   * addresses, or a named retrieval crawler / AI chat fetcher whose operator
+   * publishes none. A name that belongs to an address-checked list is never
+   * believed on its name alone.
+   */
+  const isWelcome = (request) => {
+    if (welcomeCrawler(request, o.welcome)) return true;
+    if (welcomeCrawler(request, o.verifiedRetrieval)) return true;
+    const ua = (request.headers.get('user-agent') ?? '').toLowerCase();
+    if (!ua) return false;
+    // The default lists count even when switched off: switching off address
+    // checks must not turn "bingbot" into a name anyone can wear.
+    const checked = [...WELCOME_CRAWLERS, ...VERIFIED_RETRIEVAL, ...(o.welcome ?? []), ...(o.verifiedRetrieval ?? [])];
+    if (checked.some((c) => ua.includes(c.token.toLowerCase()))) return false;
+    return isTrainingAgent(ua, o.retrieval);
   };
 
   /**
@@ -385,11 +440,7 @@ export function createGateway(options = {}) {
     if (await honours(token)) return null;
 
     const ua = request.headers.get('user-agent') ?? '';
-    const pays =
-      o.isPaidAgent(ua) ||
-      (o.chargeSpoofedBrowsers && isSpoofedBrowser(request)) ||
-      (o.chargeStaleBrowsers && isStaleBrowser(ua));
-    if (pays && !isOpen(path)) return sell(request);
+    if (isPaid(request) && !isOpen(path)) return sell(request);
     if (isOpen(path)) return null;
 
     /*
@@ -398,22 +449,30 @@ export function createGateway(options = {}) {
      * per-address allowance, and answering it 402 is how a site leaves the
      * index. Name and address must agree, so copying the string buys nothing.
      */
-    if (welcomeCrawler(request, o.welcome)) return null;
+    if (isWelcome(request)) return null;
 
     /*
      * Every caller on a challenged path proves it runs scripts, except the
-     * retrieval crawlers named as welcome (they cite back) and the search
-     * crawlers verified by address just above. Exempting anything that merely
+     * welcome crawlers just above (search crawlers verified by address,
+     * retrieval crawlers and AI chat fetchers). Exempting anything that merely
      * calls itself a bot would let the swarm walk in wearing "compatible;".
-     * Only GET and HEAD, and only with a secret to sign the answer.
+     * Only GET and HEAD, and only with a secret to sign the answer. A caller
+     * that asked for HTML gets the one-line script; anything else gets the
+     * JSON offer, since it was never going to run a script.
      */
     if (o.challenge && secret && meters(o.challenge, path) && (request.method === 'GET' || request.method === 'HEAD')) {
-      if (!isTrainingAgent(request.headers.get('user-agent') ?? '', o.retrieval)) {
-        const ip = clientIp(request);
-        if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip }))) {
-          const token = await challengeToken(secret, ip);
-          return html(challengePage({ token, cookie: o.challenge.cookie, buyUrl }), 402);
+      const ip = clientIp(request);
+      if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip }))) {
+        if (!wantsHtml(request.headers.get('accept'))) {
+          return json(
+            receipt(1, {
+              error: `${path} is read in a browser (it sets a cookie with one line of script) or with a pass. Read ${buyUrl} for how.`,
+            }),
+            402,
+          );
         }
+        const token = await challengeToken(secret, ip);
+        return html(challengePage({ token, cookie: o.challenge.cookie, buyUrl }), 402);
       }
     }
 
@@ -460,15 +519,8 @@ export function createGateway(options = {}) {
      * search crawler whose address matches its name. Exposed so a throttle
      * that meters every route charges and spares exactly the same callers.
      */
-    isPaid: (request) => {
-      const ua = request.headers.get('user-agent') ?? '';
-      return (
-        o.isPaidAgent(ua) ||
-        (o.chargeSpoofedBrowsers && isSpoofedBrowser(request)) ||
-        (o.chargeStaleBrowsers && isStaleBrowser(ua))
-      );
-    },
-    isWelcome: (request) => Boolean(welcomeCrawler(request, o.welcome)),
+    isPaid,
+    isWelcome,
     /**
      * The x402 offer this gateway would make, and the full receipt body around
      * it, without answering a request.
@@ -542,7 +594,7 @@ function normalise(options) {
   const training = options.training ?? TRAINING_AGENTS;
   const scrapers = options.scrapers ?? SCRAPER_AGENTS;
   const headless = options.headless ?? HEADLESS_AGENTS;
-  const aiIndex = options.aiIndex ?? AI_INDEX_AGENTS;
+  const aiIndex = options.aiIndex ?? [];
   const paid = [...training, ...scrapers, ...headless, ...aiIndex];
   return {
     siteUrl,
@@ -562,6 +614,7 @@ function normalise(options) {
     denyCidrs: options.denyCidrs ?? [],
     chargeSpoofedBrowsers: Boolean(options.chargeSpoofedBrowsers),
     chargeStaleBrowsers: options.chargeStaleBrowsers !== false,
+    chargeImpostors: options.chargeImpostors !== false,
     exempt: options.exempt ?? null,
     training,
     scrapers,
@@ -572,6 +625,7 @@ function normalise(options) {
         ? { paths: options.challenge.paths, cookie: options.challenge.cookie ?? 'pf_js' }
         : null,
     welcome: options.welcome === false ? null : (options.welcome ?? WELCOME_CRAWLERS),
+    verifiedRetrieval: options.verifiedRetrieval === false ? null : (options.verifiedRetrieval ?? VERIFIED_RETRIEVAL),
     retrieval: options.retrieval ?? RETRIEVAL_AGENTS,
     isPaidAgent: options.isPaidAgent ?? ((ua) => isTrainingAgent(ua, paid)),
     secret: options.secret ?? '',

@@ -16,12 +16,20 @@ const req = (path, ua = CHROME, headers = {}) =>
 
 describe('the script challenge', () => {
   it('asks a browser without the cookie to run a script, with a 402 that names the sales page', async () => {
-    const res = await gw().handle(req('/i/63576915'));
+    const res = await gw().handle(req('/i/63576915', CHROME, { accept: 'text/html,application/xhtml+xml' }));
     assert.equal(res.status, 402);
     const body = await res.text();
     assert.match(body, /document\.cookie="pf_js=[0-9a-f]{32}; Max-Age=172800/);
     assert.match(body, /location\.reload\(\)/);
     assert.match(body, /https:\/\/example\.test\/crawl/);
+  });
+
+  it('answers a client that did not ask for HTML with the JSON offer', async () => {
+    const res = await gw().handle(req('/i/63576915', CHROME, { accept: '*/*' }));
+    assert.equal(res.status, 402);
+    const body = await res.json();
+    assert.ok(body.accepts.length);
+    assert.match(body.error, /browser/);
   });
 
   it('lets the same browser through once it carries the token for its address', async () => {
@@ -52,7 +60,8 @@ describe('the script challenge', () => {
 
   it('challenges a self-declared unknown bot too, but never a named retrieval crawler', async () => {
     assert.equal((await gw().handle(req('/i/1', 'Mozilla/5.0 (compatible; RandomBot/1.0)')))?.status, 402);
-    assert.equal(await gw().handle(req('/i/1', 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; OAI-SearchBot/1.3)')), null);
+    assert.equal(await gw().handle(req('/i/1', 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; OAI-SearchBot/1.3)', { 'x-real-ip': '74.7.175.130' })), null);
+    assert.equal(await gw().handle(req('/i/1', 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0)')), null);
   });
 
   it('is off unless configured', async () => {
@@ -61,12 +70,14 @@ describe('the script challenge', () => {
 });
 
 describe('AI answer-engine indexers', () => {
-  it('are charged and named in robots.txt', async () => {
+  it('are welcome retrieval crawlers since 0.10, named welcome in robots.txt, and can still be charged by choice', async () => {
     const g = gw({ challenge: undefined });
     for (const a of AI_INDEX_AGENTS) {
-      const res = await g.handle(req('/about', `Mozilla/5.0 (compatible; ${a}/1.0)`));
-      assert.equal(res?.status, 402, a);
+      assert.equal(await g.handle(req('/about', `Mozilla/5.0 (compatible; ${a}/1.0)`)), null, a);
+      assert.equal(await gw().handle(req('/i/1', `Mozilla/5.0 (compatible; ${a}/1.0)`)), null, a);
     }
-    assert.match(g.robotsTxt(), /User-agent: meta-webindexer\nDisallow: \/\nAllow: \/crawl/);
+    assert.match(g.robotsTxt(), /User-agent: meta-webindexer\nAllow: \//);
+    const charging = gw({ challenge: undefined, aiIndex: AI_INDEX_AGENTS });
+    assert.equal((await charging.handle(req('/about', 'Mozilla/5.0 (compatible; YouBot/1.0)')))?.status, 402);
   });
 });

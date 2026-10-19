@@ -1,3 +1,5 @@
+import * as RANGES from './ranges.js';
+
 /**
  * The two checks that do not need a user agent to be honest.
  *
@@ -33,9 +35,51 @@ function ipv4ToInt(ip) {
   return n;
 }
 
-/** Parse "a.b.c.d/len" (or a bare address) into a matcher. Null if unreadable. */
+function ipv6ToBig(ip) {
+  let s = String(ip).toLowerCase();
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+  const zone = s.indexOf('%');
+  if (zone >= 0) s = s.slice(0, zone);
+  if (!s.includes(':')) return null;
+  // An IPv4 tail ("::ffff:1.2.3.4") becomes the last two groups.
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) {
+    const v4 = ipv4ToInt(tail[1]);
+    if (v4 === null) return null;
+    s = `${s.slice(0, -tail[1].length)}${(v4 >>> 16).toString(16)}:${(v4 & 0xffff).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(fill).fill('0'), ...rest];
+  if (groups.length !== 8) return null;
+  let n = 0n;
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    n = (n << 16n) | BigInt(Number.parseInt(g, 16));
+  }
+  return n;
+}
+
+const ALL6 = (1n << 128n) - 1n;
+
+/**
+ * Parse "a.b.c.d/len" or "2001:db8::/32" (or a bare address) into a matcher.
+ * Null if unreadable.
+ */
 export function parseCidr(cidr) {
   const [ip, lenRaw] = String(cidr).trim().split('/');
+  if (ip.includes(':')) {
+    const base = ipv6ToBig(ip);
+    if (base === null) return null;
+    const len = lenRaw === undefined ? 128 : Number(lenRaw);
+    if (!Number.isInteger(len) || len < 0 || len > 128) return null;
+    const mask = len === 0 ? 0n : (ALL6 << BigInt(128 - len)) & ALL6;
+    return { v6: true, base: base & mask, mask, text: `${ip}/${len}` };
+  }
   const base = ipv4ToInt(ip);
   if (base === null) return null;
   const len = lenRaw === undefined ? 32 : Number(lenRaw);
@@ -49,12 +93,22 @@ export function compileCidrs(list = []) {
   return list.map(parseCidr).filter(Boolean);
 }
 
-/** Whether an IPv4 address falls inside any compiled range. */
+/** Whether an address (IPv4 or IPv6) falls inside any compiled range. */
 export function inCidrs(ip, compiled) {
-  const n = ipv4ToInt(String(ip ?? '').trim());
+  const s = String(ip ?? '').trim();
+  if (s.includes(':')) {
+    const n = ipv6ToBig(s);
+    if (n === null) return false;
+    // An IPv4-mapped address is the IPv4 address it maps.
+    if (n >> 32n === 0xffffn) return inCidrs(int4(Number(n & 0xffffffffn)), compiled);
+    return compiled.some((c) => c.v6 && (n & c.mask) === c.base);
+  }
+  const n = ipv4ToInt(s);
   if (n === null) return false;
-  return compiled.some((c) => ((n & c.mask) >>> 0) === c.base);
+  return compiled.some((c) => !c.v6 && ((n & c.mask) >>> 0) === c.base);
 }
+
+const int4 = (n) => [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
 
 /**
  * The caller's address, as the edge reported it.
@@ -72,6 +126,20 @@ export function inCidrs(ip, compiled) {
  * refused, nothing is charged, by this check.
  */
 export function clientIp(request) {
+  const edge = edgeIp(request);
+  /*
+   * Behind Cloudflare's proxy the edge hop is a Cloudflare address and the
+   * caller is in CF-Connecting-IP. That header is only believed when the hop
+   * really is Cloudflare's, so a client cannot set it to choose its address.
+   */
+  if (edge && inCidrs(edge, cloudflare())) {
+    const cf = request.headers.get('cf-connecting-ip')?.trim();
+    if (cf) return cf;
+  }
+  return edge;
+}
+
+function edgeIp(request) {
   const real = request.headers.get('x-real-ip')?.trim();
   if (real) return real;
   const xff = request.headers.get('x-forwarded-for');
@@ -79,6 +147,9 @@ export function clientIp(request) {
   const hops = xff.split(',').map((h) => h.trim()).filter(Boolean);
   return hops[hops.length - 1] ?? '';
 }
+
+let CF = null;
+const cloudflare = () => (CF ??= compileCidrs(RANGES.cloudflare));
 
 /* -------------------------------------------------------------- spoofing -- */
 
@@ -209,4 +280,30 @@ export function welcomeCrawler(request, list) {
     if (inCidrs(ip, compiled)) return c.token;
   }
   return null;
+}
+
+/**
+ * The welcome crawler a request claims to be but is not: its user agent names
+ * one of `list` and its address is outside that crawler's published ranges.
+ * Null when it names none, when it is the real thing, or when there is no
+ * readable address to judge (fail safe: never charge on a guess).
+ *
+ * @param {Request} request
+ * @param {{token: string, cidrs: string[]}[]} list
+ */
+export function impostorCrawler(request, list) {
+  if (!list?.length) return null;
+  const ua = (request.headers.get('user-agent') ?? '').toLowerCase();
+  if (!ua) return null;
+  const ip = clientIp(request);
+  if (!ip || (!ip.includes(':') && !/^\d+\.\d+\.\d+\.\d+$/.test(ip))) return null;
+  let claimed = null;
+  for (const c of list) {
+    if (!ua.includes(c.token.toLowerCase())) continue;
+    let compiled = COMPILED.get(c);
+    if (!compiled) COMPILED.set(c, (compiled = compileCidrs(c.cidrs)));
+    if (inCidrs(ip, compiled)) return null;
+    claimed ??= c.token;
+  }
+  return claimed;
 }
