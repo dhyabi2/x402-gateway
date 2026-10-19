@@ -1,7 +1,8 @@
 import { HEADER as POWER_KEY_HEADER, isPowerKey, keyFrom, PROFULLSTACK_KEYS, SHOP_URL, verifyKey } from '@profullstack/keys';
-import { HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
+import { AI_INDEX_AGENTS, HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
 import { clientIp, compileCidrs, inCidrs, isSpoofedBrowser, isStaleBrowser, welcomeCrawler } from './edge.js';
 import { memoryQuotaStore, meters, normaliseQuota, quotaHeaders, spend } from './quota.js';
+import { challengePage, challengeToken, passedChallenge } from './challenge.js';
 import { renderPage } from './page.js';
 import { mintPass, readPass } from './pass.js';
 import { robotsTxt } from './robots.js';
@@ -16,8 +17,9 @@ import {
   verifyAndSettle,
 } from './x402.js';
 
-export { HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
+export { AI_INDEX_AGENTS, HEADLESS_AGENTS, isTrainingAgent, RETRIEVAL_AGENTS, SCRAPER_AGENTS, TRAINING_AGENTS, WELCOME_CRAWLERS } from './agents.js';
 export { clientIp, compileCidrs, currentMajor, inCidrs, isSpoofedBrowser, isStaleBrowser, parseCidr, welcomeCrawler } from './edge.js';
+export { challengePage, challengeToken, cookieValue, passedChallenge } from './challenge.js';
 export { renderPage } from './page.js';
 export { mintPass, readPass } from './pass.js';
 export { robotsTxt } from './robots.js';
@@ -59,6 +61,8 @@ export { isPowerKey, keyFrom, PROFULLSTACK_KEYS, verifyKey } from '@profullstack
  * @param {boolean} [options.chargeStaleBrowsers=true]  charge a desktop browser string two years behind its auto-updates (a rotation pool)
  * @param {string[]} [options.scrapers]            SEO resellers charged and refused in robots.txt; default SCRAPER_AGENTS
  * @param {string[]} [options.headless]            headless browsers charged; default HEADLESS_AGENTS
+ * @param {string[]} [options.aiIndex]             AI answer-engine indexers charged and named in robots.txt; default AI_INDEX_AGENTS
+ * @param {{paths: string[], cookie?: string}|false} [options.challenge]  browser-looking requests to these paths must run a one-line script (cookie + reload) first; off by default
  * @param {{token: string, cidrs: string[]}[]|false} [options.welcome]  search crawlers never metered when name and address agree; default WELCOME_CRAWLERS
  * @param {(request: Request) => boolean} [options.exempt]  requests never charged, e.g. ones carrying a signed-in cookie
  * @param {string} [options.secret]                pass signing secret; defaults to the CoinPay key
@@ -397,6 +401,23 @@ export function createGateway(options = {}) {
     if (welcomeCrawler(request, o.welcome)) return null;
 
     /*
+     * Every caller on a challenged path proves it runs scripts, except the
+     * retrieval crawlers named as welcome (they cite back) and the search
+     * crawlers verified by address just above. Exempting anything that merely
+     * calls itself a bot would let the swarm walk in wearing "compatible;".
+     * Only GET and HEAD, and only with a secret to sign the answer.
+     */
+    if (o.challenge && secret && meters(o.challenge, path) && (request.method === 'GET' || request.method === 'HEAD')) {
+      if (!isTrainingAgent(request.headers.get('user-agent') ?? '', o.retrieval)) {
+        const ip = clientIp(request);
+        if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip }))) {
+          const token = await challengeToken(secret, ip);
+          return html(challengePage({ token, cookie: o.challenge.cookie, buyUrl }), 402);
+        }
+      }
+    }
+
+    /*
      * Everyone else gets the free allowance. Running out is answered with a
      * price rather than a 429: the caller has just shown it wants more than
      * the free tier and is still holding the request, which is the best moment
@@ -467,7 +488,7 @@ export function createGateway(options = {}) {
       robotsTxt({
         siteUrl: o.siteUrl,
         path: o.path,
-        training: [...o.training, ...o.scrapers],
+        training: [...o.training, ...o.scrapers, ...o.aiIndex],
         retrieval: o.retrieval,
         ...extra,
       }),
@@ -521,7 +542,8 @@ function normalise(options) {
   const training = options.training ?? TRAINING_AGENTS;
   const scrapers = options.scrapers ?? SCRAPER_AGENTS;
   const headless = options.headless ?? HEADLESS_AGENTS;
-  const paid = [...training, ...scrapers, ...headless];
+  const aiIndex = options.aiIndex ?? AI_INDEX_AGENTS;
+  const paid = [...training, ...scrapers, ...headless, ...aiIndex];
   return {
     siteUrl,
     siteName: options.siteName || new URL(siteUrl).hostname,
@@ -544,6 +566,11 @@ function normalise(options) {
     training,
     scrapers,
     headless,
+    aiIndex,
+    challenge:
+      options.challenge && Array.isArray(options.challenge.paths) && options.challenge.paths.length
+        ? { paths: options.challenge.paths, cookie: options.challenge.cookie ?? 'pf_js' }
+        : null,
     welcome: options.welcome === false ? null : (options.welcome ?? WELCOME_CRAWLERS),
     retrieval: options.retrieval ?? RETRIEVAL_AGENTS,
     isPaidAgent: options.isPaidAgent ?? ((ua) => isTrainingAgent(ua, paid)),
