@@ -143,6 +143,8 @@ const TERMINAL_CHROME = [
   { major: 138, os: /Macintosh/ }, // macOS 11
 ];
 const FIREFOX_ESR = [115, 128, 140, 153];
+const EMBEDDED =
+  /Mobile|Android|iPhone|iPad|CrOS|CrKey|SMART-TV|SmartTV|Tizen|Web0S|WebOS|NetCast|BRAVIA|HbbTV|Roku|AFT[A-Z]|PlayStation|Xbox|Nintendo|OculusBrowser|Quest/;
 
 /**
  * A desktop browser string far older than anything that auto-updates.
@@ -163,8 +165,11 @@ const FIREFOX_ESR = [115, 128, 140, 153];
  */
 export function isStaleBrowser(ua, now = Date.now(), maxMajorsBehind = 24) {
   const s = String(ua ?? '');
-  if (!/Windows NT|Macintosh|X11; (?:Linux|Ubuntu|Fedora)/.test(s)) return false;
-  if (/Mobile|Android|iPhone|iPad|CrOS/.test(s)) return false;
+  if (!/Windows NT|Macintosh|X11; (?:Linux|Ubuntu|Fedora) x86_64/.test(s)) return false;
+  // Phones, TVs, cast sticks, consoles and headsets: an embedded browser is
+  // frozen at whatever its firmware shipped. A Chromecast says "X11; Linux
+  // armv7l ... Chrome/80 ... CrKey" for years, and it is somebody's living room.
+  if (EMBEDDED.test(s)) return false;
   if (DECLARES_ITSELF.test(s)) return false;
 
   const ff = /\bFirefox\/(\d+)/.exec(s);
