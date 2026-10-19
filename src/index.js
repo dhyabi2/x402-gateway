@@ -83,7 +83,7 @@ export { isPowerKey, keyFrom, PROFULLSTACK_KEYS, verifyKey } from '@profullstack
  * @param {string[]} [options.aiIndex]             extra agents to charge and refuse in robots.txt, e.g. AI_INDEX_AGENTS; default none (they are welcome retrieval crawlers since 0.10)
  * @param {{token: string, cidrs: string[]}[]|false} [options.verifiedRetrieval]  retrieval crawlers believed only from their published addresses; default VERIFIED_RETRIEVAL
  * @param {boolean} [options.chargeImpostors=true]  charge a request wearing a welcome search crawler's name from outside its published ranges
- * @param {{paths: string[], cookie?: string}|false} [options.challenge]  browser-looking requests to these paths must run a one-line script (cookie + reload) first; off by default
+ * @param {{paths: string[], cookie?: string, when?: (request: Request, url: URL) => boolean}|false} [options.challenge]  requests to these paths (and, with `when`, only those it accepts, e.g. faceted URLs) must run a one-line script (cookie + reload) first; off by default
  * @param {{token: string, cidrs: string[]}[]|false} [options.welcome]  search crawlers never metered when name and address agree; default WELCOME_CRAWLERS
  * @param {(request: Request) => boolean} [options.exempt]  requests never charged, e.g. ones carrying a signed-in cookie
  * @param {string} [options.secret]                pass signing secret; defaults to the CoinPay key
@@ -460,7 +460,13 @@ export function createGateway(options = {}) {
      * that asked for HTML gets the one-line script; anything else gets the
      * JSON offer, since it was never going to run a script.
      */
-    if (o.challenge && secret && meters(o.challenge, path) && (request.method === 'GET' || request.method === 'HEAD')) {
+    if (
+      o.challenge &&
+      secret &&
+      meters(o.challenge, path) &&
+      (!o.challenge.when || o.challenge.when(request, new URL(request.url))) &&
+      (request.method === 'GET' || request.method === 'HEAD')
+    ) {
       const ip = clientIp(request);
       if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip }))) {
         if (!wantsHtml(request.headers.get('accept'))) {
@@ -622,7 +628,11 @@ function normalise(options) {
     aiIndex,
     challenge:
       options.challenge && Array.isArray(options.challenge.paths) && options.challenge.paths.length
-        ? { paths: options.challenge.paths, cookie: options.challenge.cookie ?? 'pf_js' }
+        ? {
+            paths: options.challenge.paths,
+            cookie: options.challenge.cookie ?? 'pf_js',
+            when: typeof options.challenge.when === 'function' ? options.challenge.when : null,
+          }
         : null,
     welcome: options.welcome === false ? null : (options.welcome ?? WELCOME_CRAWLERS),
     verifiedRetrieval: options.verifiedRetrieval === false ? null : (options.verifiedRetrieval ?? VERIFIED_RETRIEVAL),
