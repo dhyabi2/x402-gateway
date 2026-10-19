@@ -92,6 +92,8 @@ export const GET = robotsRoute(gateway, { disallow: ['/login', '/api/'] });
 | `isPaidAgent` | training + scraper + headless lists | `(userAgent) => boolean` |
 | `scrapers` | `SCRAPER_AGENTS` | SEO resellers (AhrefsBot, SemrushBot, MJ12bot, DataForSeoBot, ...): charged and refused in robots.txt |
 | `headless` | `HEADLESS_AGENTS` | headless browsers that name themselves (Lightpanda, HeadlessChrome, PhantomJS): charged |
+| `aiIndex` | `AI_INDEX_AGENTS` | AI answer-engine indexers (meta-webindexer, YouBot, ExaSearchBot, AionBot): charged and named in robots.txt |
+| `challenge` | off | `{ paths: ['/i/'], cookie?: 'pf_js' }`: every GET to these paths must run a one-line script (sets a per-address, per-day HMAC cookie and reloads) or gets a 402. Named retrieval crawlers and address-verified search crawlers skip it; sessions and passes never see it. For residential swarms that wear a current browser string and never run the page |
 | `chargeStaleBrowsers` | `true` | charge a desktop Chrome/Edge/Firefox string about two years behind its auto-updates. Scraper rotation pools copy old strings; people's browsers update themselves. Phones, Firefox ESRs and the last version an old OS can run are never judged |
 | `welcome` | `WELCOME_CRAWLERS` | Googlebot, bingbot and Applebot read unmetered when their address is in the operator's published range. A copied string from anywhere else is metered like everyone; `false` turns this off |
 | `training`, `retrieval` | the lists in `./agents` | |

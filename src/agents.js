@@ -51,6 +51,15 @@ export const SCRAPER_AGENTS = [
  * 151k requests from 63k addresses on one site in a day (2026-10-19). They do
  * not read robots.txt, so they are charged, never named there.
  */
+/**
+ * Crawlers that feed an AI answer engine's own index and send next to nobody
+ * back: measured on our fleet 2026-10-19, meta-webindexer alone was ~5k
+ * requests an hour with no referrals to show for it. Anthony's call the same
+ * day: charge them like training crawlers. They read robots.txt, so they are
+ * named there too.
+ */
+export const AI_INDEX_AGENTS = ['meta-webindexer', 'YouBot', 'ExaSearchBot', 'AionBot'];
+
 export const HEADLESS_AGENTS = ['Lightpanda', 'HeadlessChrome', 'PhantomJS'];
 
 /**

@@ -70,6 +70,10 @@ export interface GatewayOptions {
   chargeSpoofedBrowsers?: boolean;
   /** Charge a desktop browser string ~2 years behind its auto-updates (a scraper rotation pool). Default true. */
   chargeStaleBrowsers?: boolean;
+  /** AI answer-engine indexers: charged, named in robots.txt. Default AI_INDEX_AGENTS. */
+  aiIndex?: string[];
+  /** Require a one-line script (cookie + reload) on these paths before serving them. Off by default. */
+  challenge?: { paths: string[]; cookie?: string } | false;
   /** SEO resellers: charged, and refused in robots.txt. Default SCRAPER_AGENTS. */
   scrapers?: string[];
   /** Headless browsers that name themselves: charged. Default HEADLESS_AGENTS. */
@@ -215,6 +219,11 @@ export function wantsHtml(accept?: string | null): boolean;
 export const TRAINING_AGENTS: string[];
 export const SCRAPER_AGENTS: string[];
 export const HEADLESS_AGENTS: string[];
+export const AI_INDEX_AGENTS: string[];
+export function challengeToken(secret: string, ip: string, day?: number): Promise<string>;
+export function passedChallenge(request: Request, options: { secret: string; cookie: string; ip: string; now?: number }): Promise<boolean>;
+export function challengePage(options: { token: string; cookie: string; buyUrl: string }): string;
+export function cookieValue(request: Request, name: string): string | null;
 export interface WelcomeCrawler {
   token: string;
   cidrs: string[];
