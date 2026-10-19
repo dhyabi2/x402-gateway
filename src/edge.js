@@ -111,3 +111,97 @@ export function isSpoofedBrowser(request) {
   if (DECLARES_ITSELF.test(ua)) return false;
   return !request.headers.has('sec-fetch-mode');
 }
+
+/* ---------------------------------------------------------- stale strings -- */
+
+/*
+ * Where each browser's version stood on a known day, and how fast it moves:
+ * both ship a major every four weeks. Computing "current" from the date keeps
+ * the check from going stale itself, which a hard-coded number would within a
+ * year.
+ */
+const DAY = 86_400_000;
+const CADENCE = 28 * DAY;
+const CHROME_ANCHOR = { major: 120, at: Date.UTC(2023, 11, 5) };
+const FIREFOX_ANCHOR = { major: 121, at: Date.UTC(2023, 11, 19) };
+
+/** The major a browser that auto-updates would be on at `now`. */
+export function currentMajor(browser, now = Date.now()) {
+  const a = browser === 'firefox' ? FIREFOX_ANCHOR : CHROME_ANCHOR;
+  return a.major + Math.max(0, Math.floor((now - a.at) / CADENCE));
+}
+
+/*
+ * The last version an old operating system can run, and Firefox's extended
+ * support releases. A person stuck on one of these is still a person, so these
+ * are never called stale, however old.
+ */
+const TERMINAL_CHROME = [
+  { major: 109, os: /Windows NT 6\./ }, // Windows 7, 8, 8.1
+  { major: 116, os: /Macintosh/ }, // macOS 10.13, 10.14
+  { major: 128, os: /Macintosh/ }, // macOS 10.15
+  { major: 138, os: /Macintosh/ }, // macOS 11
+];
+const FIREFOX_ESR = [115, 128, 140, 153];
+
+/**
+ * A desktop browser string far older than anything that auto-updates.
+ *
+ * Chrome, Edge and Firefox update themselves every four weeks, so a desktop
+ * "Chrome/120" two years after Chrome 120 shipped is a string copied into a
+ * scraper's rotation pool, not a browser. That is exactly what the swarms do:
+ * on 2026-10-19 one pool of ten strings (Chrome 118-120, Edge 119-120, Firefox
+ * 120-121) walked watchnews.now and r4ck.dev from thousands of residential
+ * addresses, running the page scripts as it went.
+ *
+ * Only desktop strings are judged. Phones and embedded webviews legitimately
+ * sit years behind, and a declared crawler is judged by the lists instead.
+ *
+ * @param {string} ua
+ * @param {number} [now]
+ * @param {number} [maxMajorsBehind=24]  about 22 months of releases
+ */
+export function isStaleBrowser(ua, now = Date.now(), maxMajorsBehind = 24) {
+  const s = String(ua ?? '');
+  if (!/Windows NT|Macintosh|X11; (?:Linux|Ubuntu|Fedora)/.test(s)) return false;
+  if (/Mobile|Android|iPhone|iPad|CrOS/.test(s)) return false;
+  if (DECLARES_ITSELF.test(s)) return false;
+
+  const ff = /\bFirefox\/(\d+)/.exec(s);
+  if (ff) {
+    const major = Number(ff[1]);
+    if (FIREFOX_ESR.includes(major)) return false;
+    return major < currentMajor('firefox', now) - maxMajorsBehind;
+  }
+  const chrome = /\bChrome\/(\d+)/.exec(s);
+  if (chrome) {
+    const major = Number(chrome[1]);
+    if (TERMINAL_CHROME.some((t) => t.major === major && t.os.test(s))) return false;
+    return major < currentMajor('chrome', now) - maxMajorsBehind;
+  }
+  return false;
+}
+
+/* -------------------------------------------------------- welcome crawlers -- */
+
+const COMPILED = new WeakMap();
+
+/**
+ * The welcome crawler a request is, judged by name AND address, or null.
+ *
+ * @param {Request} request
+ * @param {{token: string, cidrs: string[]}[]} list  e.g. WELCOME_CRAWLERS
+ */
+export function welcomeCrawler(request, list) {
+  if (!list?.length) return null;
+  const ua = (request.headers.get('user-agent') ?? '').toLowerCase();
+  if (!ua) return null;
+  const ip = clientIp(request);
+  for (const c of list) {
+    if (!ua.includes(c.token.toLowerCase())) continue;
+    let compiled = COMPILED.get(c);
+    if (!compiled) COMPILED.set(c, (compiled = compileCidrs(c.cidrs)));
+    if (inCidrs(ip, compiled)) return c.token;
+  }
+  return null;
+}
