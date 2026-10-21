@@ -105,7 +105,7 @@ export interface GatewayOptions {
   chargeImpostors?: boolean;
   /** Require a one-line script (cookie + reload) on these paths before serving them. Off by default. */
   /** Only GETs to `paths` that `when` accepts (default: all of them), e.g. `(req, url) => url.search.length > 1` for faceted URLs. */
-  challenge?: { paths: string[]; cookie?: string; when?: (request: Request, url: URL) => boolean } | false;
+  challenge?: { paths: string[]; cookie?: string; /** Proof-of-work bits the script must solve; true = 16. Default 0 (cookie + reload only). */ work?: number | boolean; when?: (request: Request, url: URL) => boolean } | false;
   /** SEO resellers: charged, and refused in robots.txt. Default SCRAPER_AGENTS. */
   scrapers?: string[];
   /** Headless browsers that name themselves: charged. Default HEADLESS_AGENTS. */
@@ -276,8 +276,10 @@ export const SCRAPER_AGENTS: string[];
 export const HEADLESS_AGENTS: string[];
 export const AI_INDEX_AGENTS: string[];
 export function challengeToken(secret: string, ip: string, day?: number): Promise<string>;
-export function passedChallenge(request: Request, options: { secret: string; cookie: string; ip: string; now?: number }): Promise<boolean>;
-export function challengePage(options: { token: string; cookie: string; buyUrl: string }): string;
+export function passedChallenge(request: Request, options: { secret: string; cookie: string; ip: string; work?: number; now?: number }): Promise<boolean>;
+export function challengePage(options: { token: string; cookie: string; buyUrl: string; work?: number }): string;
+export function solves(seed: string, nonce: string | undefined, work: number): Promise<boolean>;
+export function leadingZeros(bytes: Uint8Array, bits: number): boolean;
 export function cookieValue(request: Request, name: string): string | null;
 export interface WelcomeCrawler {
   token: string;

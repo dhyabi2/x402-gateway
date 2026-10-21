@@ -41,7 +41,7 @@ export {
   parseCidr,
   welcomeCrawler,
 } from './edge.js';
-export { challengePage, challengeToken, cookieValue, passedChallenge } from './challenge.js';
+export { challengePage, challengeToken, cookieValue, leadingZeros, passedChallenge, solves } from './challenge.js';
 export { renderNotice, renderPage, renderPassPage } from './page.js';
 export { checkoutClient, sessionIdFromWebhook, sessionState } from './checkout.js';
 export { mintPass, readPass } from './pass.js';
@@ -97,7 +97,7 @@ export { isPowerKey, keyFrom, PROFULLSTACK_KEYS, verifyKey } from '@profullstack
  * @param {string[]} [options.aiIndex]             extra agents to charge and refuse in robots.txt, e.g. AI_INDEX_AGENTS; default none (they are welcome retrieval crawlers since 0.10)
  * @param {{token: string, cidrs: string[]}[]|false} [options.verifiedRetrieval]  retrieval crawlers believed only from their published addresses; default VERIFIED_RETRIEVAL
  * @param {boolean} [options.chargeImpostors=true]  charge a request wearing a welcome search crawler's name from outside its published ranges
- * @param {{paths: string[], cookie?: string, when?: (request: Request, url: URL) => boolean}|false} [options.challenge]  requests to these paths (and, with `when`, only those it accepts, e.g. faceted URLs) must run a one-line script (cookie + reload) first; off by default
+ * @param {{paths: string[], cookie?: string, work?: number|boolean, when?: (request: Request, url: URL) => boolean}|false} [options.challenge]  requests to these paths (and, with `when`, only those it accepts, e.g. faceted URLs) must run a one-line script (cookie + reload) first; with `work` (bits, `true` = 16) the script must also solve a SHA-256 proof of work, so a swarm that rotates its address every page pays it on every page; off by default
  * @param {{token: string, cidrs: string[]}[]|false} [options.welcome]  search crawlers never metered when name and address agree; default WELCOME_CRAWLERS
  * @param {(request: Request) => boolean} [options.exempt]  requests never charged, e.g. ones carrying a signed-in cookie
  * @param {string} [options.secret]                pass signing secret; defaults to the CoinPay key
@@ -830,7 +830,7 @@ export function createGateway(options = {}) {
       (request.method === 'GET' || request.method === 'HEAD')
     ) {
       const ip = clientIp(request);
-      if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip }))) {
+      if (ip && !(await passedChallenge(request, { secret, cookie: o.challenge.cookie, ip, work: o.challenge.work }))) {
         if (!wantsHtml(request.headers.get('accept'))) {
           return json(
             receipt(1, {
@@ -841,7 +841,7 @@ export function createGateway(options = {}) {
           );
         }
         const token = await challengeToken(secret, ip);
-        return html(challengePage({ token, cookie: o.challenge.cookie, buyUrl }), 402, required(1));
+        return html(challengePage({ token, cookie: o.challenge.cookie, buyUrl, work: o.challenge.work }), 402, required(1));
       }
     }
 
@@ -1015,6 +1015,7 @@ function normalise(options) {
         ? {
             paths: options.challenge.paths,
             cookie: options.challenge.cookie ?? 'pf_js',
+            work: challengeWork(options.challenge.work),
             when: typeof options.challenge.when === 'function' ? options.challenge.when : null,
           }
         : null,
@@ -1038,6 +1039,12 @@ function normalise(options) {
     revokedKeys: options.revokedKeys ?? null,
     fetch: options.fetch ?? globalThis.fetch,
   };
+}
+
+/** `true` means the default 16 bits; a number is clamped to 0-24 (24 is ~16M digests, too slow for a phone). */
+function challengeWork(work) {
+  if (work === true) return 16;
+  return Number.isInteger(work) ? Math.max(0, Math.min(24, work)) : 0;
 }
 
 export { METHODS as X402_METHODS };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { AI_INDEX_AGENTS } from '../src/agents.js';
-import { challengeToken } from '../src/challenge.js';
+import { challengeToken, leadingZeros, solves } from '../src/challenge.js';
 import { createGateway } from '../src/index.js';
 
 const KEY = 'cp_live_0123456789abcdef0123456789abcdef';
@@ -92,5 +92,45 @@ describe('challenge.when', () => {
     assert.equal((await g.handle(req('/feeds/new?collection=packages&tags=ai', CHROME, html)))?.status, 402);
     const token = await challengeToken(KEY, '198.51.100.7');
     assert.equal(await g.handle(req('/tlds?manager=x', CHROME, { ...html, cookie: `pf_js=${token}` })), null);
+  });
+});
+
+describe('challenge.work (proof of work)', () => {
+  const pow = (extra = {}) => gw({ challenge: { paths: ['/i/'], work: 8 }, ...extra });
+  const html = { accept: 'text/html' };
+  async function solve(seed, work) {
+    for (let n = 0; ; n++) if (await solves(seed, String(n), work)) return String(n);
+  }
+
+  it('the page carries a solver, not a bare cookie', async () => {
+    const res = await pow().handle(req('/i/1', CHROME, html));
+    assert.equal(res.status, 402);
+    const body = await res.text();
+    assert.match(body, /crypto\.subtle\.digest\('SHA-256'/);
+    assert.match(body, /w=8,/);
+    assert.match(body, /navigator\.webdriver/);
+  });
+
+  it('the bare token no longer opens the page; token plus a solving nonce does', async () => {
+    const token = await challengeToken(KEY, '198.51.100.7');
+    assert.equal((await pow().handle(req('/i/1', CHROME, { cookie: `pf_js=${token}` })))?.status, 402);
+    let bad = 0;
+    while (await solves(token, String(bad), 8)) bad++;
+    assert.equal((await pow().handle(req('/i/1', CHROME, { cookie: `pf_js=${token}.${bad}` })))?.status, 402);
+    const nonce = await solve(token, 8);
+    assert.equal(await pow().handle(req('/i/1', CHROME, { cookie: `pf_js=${token}.${nonce}` })), null);
+  });
+
+  it('a solved cookie for one address does not open another', async () => {
+    const token = await challengeToken(KEY, '198.51.100.8');
+    const nonce = await solve(token, 8);
+    assert.equal((await pow().handle(req('/i/1', CHROME, { cookie: `pf_js=${token}.${nonce}` })))?.status, 402);
+  });
+
+  it('true means 16 bits, and the answer the page script finds is accepted', async () => {
+    const res = await gw({ challenge: { paths: ['/i/'], work: true } }).handle(req('/i/1', CHROME, html));
+    assert.match(await res.text(), /w=16,/);
+    assert.equal(leadingZeros(new Uint8Array([0, 0x0f]), 12), true);
+    assert.equal(leadingZeros(new Uint8Array([0, 0x10]), 12), false);
   });
 });

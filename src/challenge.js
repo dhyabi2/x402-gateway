@@ -14,6 +14,15 @@
  * address. The page that asks is a 402 carrying a link to the sales page, so a
  * scraper that cannot run scripts learns what a pass costs, which is the same
  * answer every other refused crawler gets.
+ *
+ * That was not enough. On 2026-10-21 the slice of the swarm that drives a real
+ * Chrome ran the script and walked in: 402, then the same address in the same
+ * second, then a 200, then never again. It rotates its address on every page,
+ * so "once per address per day" is once per page and the script cost it one
+ * request. With `work` set the script must also find a nonce whose SHA-256
+ * starts with that many zero bits. A person pays about a second once a day; a
+ * swarm that changes address every page pays it on every page. The server
+ * checks the answer with one hash and keeps nothing.
  */
 
 const enc = new TextEncoder();
@@ -42,19 +51,48 @@ export function cookieValue(request, name) {
   return null;
 }
 
-/** Whether the request carries today's or yesterday's token for its address. */
-export async function passedChallenge(request, { secret, cookie, ip, now = Date.now() }) {
+/** Whether a SHA-256 digest starts with `bits` zero bits. */
+export function leadingZeros(bytes, bits) {
+  let i = 0;
+  for (; bits >= 8; bits -= 8) if (bytes[i++]) return false;
+  return !bits || !(bytes[i] >> (8 - bits));
+}
+
+/** Whether `nonce` answers the proof of work for `seed`. */
+export async function solves(seed, nonce, work) {
+  if (!work) return true;
+  if (!/^\d{1,12}$/.test(nonce ?? '')) return false;
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(`${seed}.${nonce}`)));
+  return leadingZeros(digest, work);
+}
+
+/**
+ * Whether the request carries today's or yesterday's token for its address,
+ * and, with `work`, a nonce that answers it (cookie `<token>.<nonce>`).
+ */
+export async function passedChallenge(request, { secret, cookie, ip, work = 0, now = Date.now() }) {
   const got = cookieValue(request, cookie);
   if (!got) return false;
+  const [seed, nonce] = got.split('.');
   const day = Math.floor(now / DAY);
-  for (const d of [day, day - 1]) if (got === (await challengeToken(secret, ip, d))) return true;
+  for (const d of [day, day - 1]) if (seed === (await challengeToken(secret, ip, d))) return solves(seed, nonce, work);
   return false;
 }
 
+/** The script that finds the nonce, 256 digests at a time, then sets the cookie and reloads. */
+const solver = (token, cookie, work) => `(async()=>{const s=${JSON.stringify(token)},w=${work},e=new TextEncoder();
+if(navigator.webdriver){document.body.insertAdjacentHTML('beforeend','<p>Automated browsers need a pass.</p>');return}
+const ok=b=>{let n=w,i=0;for(;n>=8;n-=8)if(b[i++])return 0;return!n||!(b[i]>>(8-n))};
+for(let n=0;;n+=256){const h=await Promise.all(Array.from({length:256},(_,k)=>crypto.subtle.digest('SHA-256',e.encode(s+'.'+(n+k)))));
+for(let k=0;k<256;k++)if(ok(new Uint8Array(h[k]))){document.cookie=${JSON.stringify(`${cookie}=`)}+s+'.'+(n+k)+${JSON.stringify('; Max-Age=172800; Path=/; SameSite=Lax; Secure')};location.reload();return}}})();`;
+
 /** The page that asks. Tiny on purpose: answering it must cost us nothing. */
-export function challengePage({ token, cookie, buyUrl }) {
+export function challengePage({ token, cookie, buyUrl, work = 0 }) {
+  const script = work
+    ? solver(token, cookie, work)
+    : `document.cookie=${JSON.stringify(`${cookie}=${token}; Max-Age=172800; Path=/; SameSite=Lax; Secure`)};location.reload();`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>One moment</title></head><body>
-<script>document.cookie=${JSON.stringify(`${cookie}=${token}; Max-Age=172800; Path=/; SameSite=Lax; Secure`)};location.reload();</script>
+${work ? '<p>Checking your browser. This takes about a second, once a day.</p>\n' : ''}<script>${script}</script>
 <noscript><p>This page needs JavaScript. Automated access is sold by the day: <a href="${buyUrl}">${buyUrl}</a></p></noscript>
 </body></html>`;
 }
