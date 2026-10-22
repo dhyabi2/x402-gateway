@@ -148,8 +148,8 @@ describe('challenge.css (the stylesheet test)', () => {
     assert.equal(res.status, 402);
     const body = await res.text();
     const token = await challengeToken(KEY, '198.51.100.7');
-    assert.ok(body.includes(`<link id="pfc" rel="stylesheet" href="/__pf/c/${token}">`));
-    assert.match(body, /getElementById\('pfc'\)/);
+    assert.ok(body.includes(`<link id="pfc" rel="stylesheet" href="/__pf/c/${token}" onload="window.__pfc=1" onerror="window.__pfc=2">`));
+    assert.match(body, /window\.__pfc!==1/);
   });
 
   it('a solved puzzle alone no longer opens the page; with the stylesheet cookie it does', async () => {
