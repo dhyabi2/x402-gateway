@@ -117,8 +117,13 @@ export async function stylesheetResponse(request, { secret, cookie, ip, cssPath,
   return new Response('/* ok */\n', { status: 200, headers });
 }
 
-/** Wait for the challenge stylesheet; if it cannot load, say so rather than reload forever. */
-const WAIT_CSS = `const l=document.getElementById('pfc');if(!(l.sheet||await new Promise(r=>{l.onload=()=>r(1);l.onerror=()=>r(0)}))){document.body.insertAdjacentHTML('beforeend','<p>This check needs the page stylesheet. Reload, or buy a pass.</p>');return}
+/**
+ * Wait for the challenge stylesheet; if it cannot load, say so rather than
+ * reload. The link's own onload/onerror record the outcome in `__pfc`, because
+ * the load can finish before this script runs and Chrome hands a failed link
+ * an empty `sheet` anyway, so neither a late listener nor `l.sheet` can tell.
+ */
+const WAIT_CSS = `while(!window.__pfc)await new Promise(r=>setTimeout(r,50));if(window.__pfc!==1){document.body.insertAdjacentHTML('beforeend','<p>This check needs the page stylesheet. Reload, or buy a pass.</p>');return}
 `;
 
 /** The script that finds the nonce, 256 digests at a time, then sets the cookie and reloads. */
@@ -134,7 +139,7 @@ export function challengePage({ token, cookie, buyUrl, work = 0, cssPath = null 
   const script = work || css
     ? solver(token, cookie, work, css)
     : `document.cookie=${JSON.stringify(`${cookie}=${token}; Max-Age=172800; Path=/; SameSite=Lax; Secure`)};location.reload();`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>One moment</title>${css ? `<link id="pfc" rel="stylesheet" href="${cssPath}${token}">` : ''}</head><body>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>One moment</title>${css ? `<link id="pfc" rel="stylesheet" href="${cssPath}${token}" onload="window.__pfc=1" onerror="window.__pfc=2">` : ''}</head><body>
 ${work || css ? '<p>Checking your browser. This takes about a second, once a day.</p>\n' : ''}<script>${script}</script>
 <noscript><p>This page needs JavaScript. Automated access is sold by the day: <a href="${buyUrl}">${buyUrl}</a></p></noscript>
 </body></html>`;
