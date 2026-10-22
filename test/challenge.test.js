@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { AI_INDEX_AGENTS } from '../src/agents.js';
-import { challengeToken, leadingZeros, solves } from '../src/challenge.js';
+import { challengeToken, leadingZeros, solves, stylesheetToken } from '../src/challenge.js';
 import { createGateway } from '../src/index.js';
 
 const KEY = 'cp_live_0123456789abcdef0123456789abcdef';
@@ -132,5 +132,52 @@ describe('challenge.work (proof of work)', () => {
     assert.match(await res.text(), /w=16,/);
     assert.equal(leadingZeros(new Uint8Array([0, 0x0f]), 12), true);
     assert.equal(leadingZeros(new Uint8Array([0, 0x10]), 12), false);
+  });
+});
+
+describe('challenge.css (the stylesheet test)', () => {
+  const g = () => gw({ challenge: { paths: ['/i/'], work: 4, css: true } });
+  const html = { accept: 'text/html' };
+  async function solved(ip = '198.51.100.7') {
+    const token = await challengeToken(KEY, ip);
+    for (let n = 0; ; n++) if (await solves(token, String(n), 4)) return `${token}.${n}`;
+  }
+
+  it('links a stylesheet unique to the address and day, and waits for it before reloading', async () => {
+    const res = await g().handle(req('/i/1', CHROME, html));
+    assert.equal(res.status, 402);
+    const body = await res.text();
+    const token = await challengeToken(KEY, '198.51.100.7');
+    assert.ok(body.includes(`<link id="pfc" rel="stylesheet" href="/__pf/c/${token}">`));
+    assert.match(body, /getElementById\('pfc'\)/);
+  });
+
+  it('a solved puzzle alone no longer opens the page; with the stylesheet cookie it does', async () => {
+    const pf = await solved();
+    assert.equal((await g().handle(req('/i/1', CHROME, { cookie: `pf_js=${pf}` })))?.status, 402);
+    const css = await stylesheetToken(KEY, '198.51.100.7');
+    assert.equal(await g().handle(req('/i/1', CHROME, { cookie: `pf_js=${pf}; pf_js_css=${css}` })), null);
+    const other = await stylesheetToken(KEY, '198.51.100.8');
+    assert.equal((await g().handle(req('/i/1', CHROME, { cookie: `pf_js=${pf}; pf_js_css=${other}` })))?.status, 402);
+  });
+
+  it('fetching the stylesheet sets the cookie, only for its own address', async () => {
+    const token = await challengeToken(KEY, '198.51.100.7');
+    const res = await g().handle(req(`/__pf/c/${token}`, CHROME, { accept: 'text/css' }));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/css/);
+    const css = await stylesheetToken(KEY, '198.51.100.7');
+    assert.match(res.headers.get('set-cookie') ?? '', new RegExp(`pf_js_css=${css};`));
+    const elsewhere = await g().handle(req(`/__pf/c/${token}`, CHROME, { 'x-real-ip': '198.51.100.9' }));
+    assert.equal(elsewhere.status, 200);
+    assert.equal(elsewhere.headers.get('set-cookie'), null);
+    const junk = await g().handle(req('/__pf/c/nope', CHROME));
+    assert.equal(junk.headers.get('set-cookie'), null);
+  });
+
+  it('is off unless asked for: no stylesheet route, no link', async () => {
+    const plain = gw({ challenge: { paths: ['/i/'], work: 4 } });
+    assert.equal(await plain.handle(req('/__pf/c/abc')), null);
+    assert.doesNotMatch(await (await plain.handle(req('/i/1', CHROME, html))).text(), /rel="stylesheet"/);
   });
 });

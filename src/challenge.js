@@ -23,6 +23,15 @@
  * starts with that many zero bits. A person pays about a second once a day; a
  * swarm that changes address every page pays it on every page. The server
  * checks the answer with one hash and keeps nothing.
+ *
+ * The proof of work did not slow it either (~46 item pages a minute before,
+ * ~40 after): its Chrome is real and solves 17 bits easily. But it never
+ * loads the page's stylesheet. Of 5,394 addresses that read an item page as
+ * a browser, 11 fetched any CSS or JS; a real Chrome fetches the stylesheet
+ * on every first visit. With `css` set the page links a stylesheet unique to
+ * the address and day, and fetching it is what sets the second cookie. A
+ * scraper that blocks stylesheets to save bandwidth never gets it, however
+ * much script it runs.
  */
 
 const enc = new TextEncoder();
@@ -40,6 +49,17 @@ async function hmac(secret, data) {
 
 /** The token a browser at `ip` gets on day `day` (days since the epoch). */
 export const challengeToken = (secret, ip, day = Math.floor(Date.now() / DAY)) => hmac(secret, `js|${ip}|${day}`);
+
+/** The second cookie, set only by fetching the challenge stylesheet. */
+export const stylesheetToken = (secret, ip, day = Math.floor(Date.now() / DAY)) => hmac(secret, `css|${ip}|${day}`);
+
+/** Whether `got` is today's or yesterday's value of `mint(day)`. */
+async function current(got, mint, now) {
+  if (!got) return false;
+  const day = Math.floor(now / DAY);
+  for (const d of [day, day - 1]) if (got === (await mint(d))) return true;
+  return false;
+}
 
 /** Read one cookie by name. */
 export function cookieValue(request, name) {
@@ -68,31 +88,54 @@ export async function solves(seed, nonce, work) {
 
 /**
  * Whether the request carries today's or yesterday's token for its address,
- * and, with `work`, a nonce that answers it (cookie `<token>.<nonce>`).
+ * and, with `work`, a nonce that answers it (cookie `<token>.<nonce>`), and,
+ * with `css`, the cookie the challenge stylesheet sets (`<cookie>_css`).
  */
-export async function passedChallenge(request, { secret, cookie, ip, work = 0, now = Date.now() }) {
+export async function passedChallenge(request, { secret, cookie, ip, work = 0, css = false, now = Date.now() }) {
   const got = cookieValue(request, cookie);
   if (!got) return false;
   const [seed, nonce] = got.split('.');
-  const day = Math.floor(now / DAY);
-  for (const d of [day, day - 1]) if (seed === (await challengeToken(secret, ip, d))) return solves(seed, nonce, work);
-  return false;
+  if (!(await current(seed, (d) => challengeToken(secret, ip, d), now))) return false;
+  if (!(await solves(seed, nonce, work))) return false;
+  if (!css) return true;
+  return current(cookieValue(request, `${cookie}_css`), (d) => stylesheetToken(secret, ip, d), now);
 }
 
+/**
+ * The challenge stylesheet: `<cssPath><token>`. Sets `<cookie>_css` when the
+ * token in the URL is today's or yesterday's for the caller's address, so the
+ * URL cannot be fetched on behalf of another address. Always answers CSS, so a
+ * browser never logs a broken stylesheet.
+ */
+export async function stylesheetResponse(request, { secret, cookie, ip, cssPath, now = Date.now() }) {
+  const token = new URL(request.url).pathname.slice(cssPath.length);
+  const headers = new Headers({ 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' });
+  if (ip && /^[0-9a-f]{32}$/.test(token) && (await current(token, (d) => challengeToken(secret, ip, d), now))) {
+    const value = await stylesheetToken(secret, ip);
+    headers.append('set-cookie', `${cookie}_css=${value}; Max-Age=172800; Path=/; SameSite=Lax; Secure; HttpOnly`);
+  }
+  return new Response('/* ok */\n', { status: 200, headers });
+}
+
+/** Wait for the challenge stylesheet; if it cannot load, say so rather than reload forever. */
+const WAIT_CSS = `const l=document.getElementById('pfc');if(!(l.sheet||await new Promise(r=>{l.onload=()=>r(1);l.onerror=()=>r(0)}))){document.body.insertAdjacentHTML('beforeend','<p>This check needs the page stylesheet. Reload, or buy a pass.</p>');return}
+`;
+
 /** The script that finds the nonce, 256 digests at a time, then sets the cookie and reloads. */
-const solver = (token, cookie, work) => `(async()=>{const s=${JSON.stringify(token)},w=${work},e=new TextEncoder();
+const solver = (token, cookie, work, css) => `(async()=>{const s=${JSON.stringify(token)},w=${work},e=new TextEncoder();${css ? WAIT_CSS : ''}
 if(navigator.webdriver){document.body.insertAdjacentHTML('beforeend','<p>Automated browsers need a pass.</p>');return}
 const ok=b=>{let n=w,i=0;for(;n>=8;n-=8)if(b[i++])return 0;return!n||!(b[i]>>(8-n))};
 for(let n=0;;n+=256){const h=await Promise.all(Array.from({length:256},(_,k)=>crypto.subtle.digest('SHA-256',e.encode(s+'.'+(n+k)))));
 for(let k=0;k<256;k++)if(ok(new Uint8Array(h[k]))){document.cookie=${JSON.stringify(`${cookie}=`)}+s+'.'+(n+k)+${JSON.stringify('; Max-Age=172800; Path=/; SameSite=Lax; Secure')};location.reload();return}}})();`;
 
 /** The page that asks. Tiny on purpose: answering it must cost us nothing. */
-export function challengePage({ token, cookie, buyUrl, work = 0 }) {
-  const script = work
-    ? solver(token, cookie, work)
+export function challengePage({ token, cookie, buyUrl, work = 0, cssPath = null }) {
+  const css = Boolean(cssPath);
+  const script = work || css
+    ? solver(token, cookie, work, css)
     : `document.cookie=${JSON.stringify(`${cookie}=${token}; Max-Age=172800; Path=/; SameSite=Lax; Secure`)};location.reload();`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>One moment</title></head><body>
-${work ? '<p>Checking your browser. This takes about a second, once a day.</p>\n' : ''}<script>${script}</script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>One moment</title>${css ? `<link id="pfc" rel="stylesheet" href="${cssPath}${token}">` : ''}</head><body>
+${work || css ? '<p>Checking your browser. This takes about a second, once a day.</p>\n' : ''}<script>${script}</script>
 <noscript><p>This page needs JavaScript. Automated access is sold by the day: <a href="${buyUrl}">${buyUrl}</a></p></noscript>
 </body></html>`;
 }
